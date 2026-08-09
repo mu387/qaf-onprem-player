@@ -1,0 +1,133 @@
+name: Player Local Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {0}
+
+    steps:
+      - name: Pre-clean stale package output
+        run: |
+          $workspaceRepoRoot = Join-Path $env:RUNNER_WORKSPACE "QAF-OnPrem-Player\QAF-OnPrem-Player\s"
+          $staleOut = Join-Path $workspaceRepoRoot "out"
+          if (Test-Path $staleOut) {
+            # Stop processes still holding files under the previous package output.
+            $escaped = [Regex]::Escape($staleOut)
+            $processes = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+              $_.CommandLine -and $_.CommandLine -match $escaped
+            }
+            foreach ($proc in $processes) {
+              try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop } catch { }
+            }
+
+            attrib -R -S -H "$staleOut" /S /D 2>$null
+            Remove-Item -LiteralPath $staleOut -Recurse -Force -ErrorAction SilentlyContinue
+            if (Test-Path $staleOut) {
+              cmd /c "rd /s /q \"$staleOut\"" | Out-Null
+            }
+          }
+
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          path: s
+
+      - name: Verify local Node.js runtime
+        run: |
+          node -v
+          npm -v
+
+      - name: Prepare clean npm config
+        run: |
+          $npmUserConfig = Join-Path $env:RUNNER_TEMP "player-npmrc"
+          @"
+          registry=https://registry.npmjs.org/
+          strict-ssl=false
+          "@ | Set-Content -Path $npmUserConfig -Encoding ascii
+          "NPM_CONFIG_USERCONFIG=$npmUserConfig" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install dependencies
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: "0"
+        run: |
+          cd s
+          npm ci --include=dev
+
+      - name: Prepare env file for local packaging
+        run: |
+            cd s
+            $localEnv = "C:\secrets\QAF-OnPrem-player\.env.local"
+            if (Test-Path $localEnv) {
+              Copy-Item $localEnv .env.staging -Force
+            } else {
+              Write-Error "Missing local env file at $localEnv"
+              exit 1
+            }
+
+      - name: Build player package
+        env:
+          NODE_TLS_REJECT_UNAUTHORIZED: "0"
+        run: |
+          cd s
+          $forgeTemp = Join-Path $env:RUNNER_TEMP "player-forge-temp"
+          New-Item -ItemType Directory -Force -Path $forgeTemp | Out-Null
+          # Force packaging to use runner-scoped temp to avoid service-profile temp lock issues.
+          $env:TEMP = $forgeTemp
+          $env:TMP = $forgeTemp
+
+          $maxAttempts = 3
+          $attempt = 1
+          $succeeded = $false
+          while ($attempt -le $maxAttempts -and -not $succeeded) {
+            Write-Output "Packaging attempt $attempt of $maxAttempts"
+            npx electron-forge package
+            if ($LASTEXITCODE -eq 0) {
+              $succeeded = $true
+              break
+            }
+
+            Write-Warning "electron-forge package failed on attempt $attempt. Cleaning forge temp and retrying..."
+            $packagerTemp = Join-Path $forgeTemp "electron-packager"
+            if (Test-Path $packagerTemp) {
+              attrib -R -S -H "$packagerTemp" /S /D 2>$null
+              Remove-Item -LiteralPath $packagerTemp -Recurse -Force -ErrorAction SilentlyContinue
+              if (Test-Path $packagerTemp) {
+                cmd /c "rd /s /q \"$packagerTemp\"" | Out-Null
+              }
+            }
+
+            $attempt++
+          }
+
+          if (-not $succeeded) {
+            Write-Error "electron-forge package failed after $maxAttempts attempts"
+            exit 1
+          }
+
+      - name: Copy artifacts to local deploy folder
+        run: |
+          cd s
+          $target = "C:\deploy\QAF-OnPrem--Player"
+          $source = "$PWD\out"
+          if (!(Test-Path $source)) {
+            Write-Error "Build output folder not found at $source"
+            exit 1
+          }
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          $PSNativeCommandUseErrorActionPreference = $false
+          robocopy $source $target /MIR /R:2 /W:2 /MT:8 /NFL /NDL /NP
+          $robocopyExitCode = $LASTEXITCODE
+          if ($robocopyExitCode -ge 8) {
+            Write-Error "Artifact copy failed with robocopy exit code $robocopyExitCode"
+            exit $robocopyExitCode
+          }
+          exit 0

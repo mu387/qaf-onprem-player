@@ -1,0 +1,387 @@
+<!doctype html>
+<html>
+
+<head id="head">
+  <meta charset="UTF-8" />
+  <title>QAF-OnPrem Player</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Afacad+Flux:wght@100..1000&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="./style.css" rel="stylesheet">
+
+</head>
+
+<body class="bg-whit !bg-neutral-150 dark:!text-slate-400">
+
+  <!-- Splash Screen -->
+  <div id="qaf-splash" class="active">
+    <div class="qaf-logo-wrap">
+      <div class="qaf-logo">QAF-OnPrem Player</div>
+      <div class="qaf-orbit">
+        <span class="qaf-dot qaf-dot1"></span>
+        <span class="qaf-dot qaf-dot2"></span>
+        <span class="qaf-dot qaf-dot3"></span>
+      </div>
+    </div>
+    <p class="qaf-tagline">Preparing your automation cockpit…</p>
+    <div class="qaf-progress">
+      <div class="qaf-progress-bar" id="qaf-progress-bar"></div>
+    </div>
+  </div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar !bg-neutral-800 dark:!bg-slate-950" id="sidebar">
+    <div class="header border-b pb-3">
+      <div class="text-center text-white fw-bold fs-4 py-2">QAF-OnPrem Player</div>
+
+    </div>
+
+    <nav>
+
+      <span class="text-white-50 px-3 py-2 block text-xs">Actions</span>
+      <ul class="divide-y divide-solid">
+        <li class=" nav-link bg-green-900 hover:!bg-green-700 dark:!text-slate-200 text-base border-t-0 d-flex align-items-center justify-content-between gap-2 d-none hidden" id="appiumServerToggle">
+          <span class="d-flex align-items-center gap-1">
+            <i class="bi bi-play-fill" id="appiumServerIcon"></i>
+          <span id="appiumServerLabel">Start Appium Server</span>
+          </span>
+        </li>
+        <li class=" nav-link bg-green-900 hover:!bg-green-700 dark:!text-slate-200 text-base border-t-0 d-none hidden" id="startWinAppServer"><i
+            class="bi bi-play-fill"></i> <span>
+            Start WinApp Server</span></li>
+        <li class=" nav-link bg-red-900 hidden hover:!bg-red-700 dark:!text-slate-200 text-base d-none" id="stopWinAppServer"><i
+            class="bi bi-stop-circle"></i> <span> Stop WinApp Server</span></li>
+        <li class=" nav-link dark:!text-slate-200 bg-yellow-900 hover:!bg-yellow-700 text-base " id="pause"><i
+            class="bi bi-pause"></i> <span> Pause
+            Execution</span></li>
+        <li class=" nav-link dark:!text-slate-200 text-base hidden bg-blue-900 hover:!bg-blue-700 " id="resume"><i
+            class="bi bi-repeat"></i> <span> Resume
+            Execution</span></li>
+        <li class=" nav-link dark:!text-slate-400 text-base flex items-center gap-2" id="captureXpath">
+          <div id="spyIndicator" class="h-3 w-3 rounded-full bg-gray-400"></div>
+          <span>Spy Objects</span>
+        </li>
+        <li class=" nav-link dark:!text-slate-400 text-base flex items-center gap-2" id="devToolsRow">
+          <span>Developer Tools</span>
+          <div class="d-flex align-items-center gap-1 ms-auto">
+            <button class="btn btn-outline-secondary btn-sm" id="forceReloadBtn" title="Force reload">
+              <i class="bi bi-arrow-repeat"></i>
+            </button>
+            <button class="btn btn-outline-secondary btn-sm" id="toggleDevToolsBtn" title="Toggle DevTools">
+              <i class="bi bi-braces"></i>
+            </button>
+          </div>
+        </li>
+        <li class="nav-link dark:!text-slate-400 text-base d-flex align-items-center justify-content-between gap-2">
+          <span>Allow Recovery</span>
+          <div class="form-check form-switch mb-0">
+            <input class="form-check-input" type="checkbox" id="allowRecoveryToggle">
+          </div>
+        </li>
+      </ul>
+    </nav>
+  </aside>
+
+  <!-- Main Content -->
+  <div class="main-content dark:bg-slate-900" id="mainContent">
+
+
+    <!-- Main Card -->
+    <div class="card main-card p-0 dark:bg-slate-900 dark:!text-slate-400">
+      <div class="card-header border-b border-slate-700 py-3">
+        <!-- Main Header -->
+        <header class="">
+          <div class=" flex align-items-center gap-3">
+            <div class="d-flex flex-fill gap-4 align-items-center">
+              <button class="toggle-btn" id="openSidebarBtn">☰</button>
+              <div class="form-check mb-0">
+                <input class="form-check-input mt-1.5" type="checkbox" value="" id="reExecute">
+                <label class="form-check-label cursor-pointer  dark:!text-slate-400 text-lg" for="reExecute">
+                  Re-Execute Fail Step
+                </label>
+              </div>
+              <div class="form-check form-switch mb-0 d-flex align-items-center gap-2">
+                <input class="form-check-input" type="checkbox" id="highlightToggle">
+                <label class="form-check-label cursor-pointer dark:!text-slate-400 text-sm" for="highlightToggle">
+                  Highlight elements
+                </label>
+              </div>
+              <div class="form-check form-switch mb-0 d-flex align-items-center gap-2">
+                <input class="form-check-input" type="checkbox" id="executionSpeedToggle">
+                <label class="form-check-label cursor-pointer dark:!text-slate-400 text-sm" for="executionSpeedToggle">
+                  Execution: Fast
+                </label>
+              </div>
+              <button id="resumeFailedStepBtn" class="btn btn-outline-warning btn-sm hidden d-none">
+                Resume Failed Step
+              </button>
+            </div>
+            <div class=" d-flex flex-fill justify-content-end align-items-center">
+              <select id="screenDropdown"
+                class="w-48 appearance-none mr-4 h-10 forced-colors:appearance-auto border rounded-lg bg-slate-50 dark:bg-slate-900 hover:border-cyan-500 dark:hover:border-cyan-700 hover:bg-slate-100 dark:hover:bg-slate-800 border-slate-300 dark:border-slate-600 text-slate-900 dark:text-slate-200 px-2"
+                aria-label="Default select example">
+                <option selected>Select Screen</option>
+              </select>
+              <div id="serverNotRunning" class="loader" data-bs-toggle="tooltip" data-bs-placement="top"
+                data-bs-custom-class="bg-danger" data-bs-title="Server Status: Not Running">
+                <span class="bar bg-red-500"></span>
+                <span class="bar bg-red-600"></span>
+                <span class="bar bg-red-500"></span>
+              </div>
+
+              <div id="serverIsRunning" class="loader hidden" data-bs-toggle="tooltip" data-bs-placement="top"
+                data-bs-custom-class="bg-success" data-bs-title="Server Status: Running">
+                <span class="bar bg-green-500"></span>
+                <span class="bar bg-green-600"></span>
+                <span class="bar bg-green-500"></span>
+              </div>
+
+            </div>
+          </div>
+
+        </header>
+      </div>
+      <div class="card-body flex flex-column p-2">
+        <div class="accordion  accordion-flush my-2 shadow-sm border " id="textActions">
+          <div class="accordion-item  dark:!border-slate-800">
+            <h2 class="accordion-header ">
+              <button
+                class="accordion-button !bg-neutral-100 dark:!bg-slate-950  !text-slate-900  focus:shadow-none  &:not(.collapsed):!bg-stone-950 dark:!text-slate-400  font-bold collapsed border-b "
+                type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" aria-expanded="true"
+                aria-controls="collapseOne">
+                Test Actions
+              </button>
+            </h2>
+            <div id="collapseOne" class="accordion-collapse collapse  visible" data-bs-parent="#textActions">
+              <div class="accordion-body p-3 dark:!bg-slate-800 dark:!text-slate-400">
+                <div>
+                  <div class="row gap-2">
+                    <div class="col-auto">
+                      <button class="btn btn-primary btn-sm" id="testLaunchBrowser">Launch Browser</button>
+                    </div>
+                  </div>
+                  <div class="row mt-2">
+                    <div class="col">
+                      <input type="text" id="testLocator" placeholder="locator"
+                        class="w-full h-full px-3  border rounded-lg bg-slate-50 dark:!bg-slate-950 hover:border-cyan-500 dark:hover:border-cyan-700 hover:bg-white dark:hover:bg-stone-800 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200">
+                    </div>
+                    <div class="col-4">
+                      <select
+                        class="appearance-none forced-colors:appearance-auto border rounded-lg bg-slate-50 dark:!bg-slate-950 hover:border-cyan-500 dark:hover:border-cyan-700 hover:bg-white dark:hover:bg-stone-800 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 px-2 w-full h-12"
+                        id="testKeyword">
+                        <option>Select Keyword</option>
+                      </select>
+                    </div>
+
+                  </div>
+                  <div class="row mt-2">
+                    <div class="col-12 mb-2">
+                      <textarea type="text" id="testValue" placeholder="value"
+                        class="w-full p-3  border rounded-lg bg-slate-50 dark:!bg-slate-950 hover:border-cyan-500 dark:hover:border-cyan-700 hover:bg-white dark:hover:bg-stone-800 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200"></textarea>
+
+                    </div>
+                    <div class="col">
+                      <button
+                        class="btn  btn-outline-dark btn-sm dark:!bg-slate-950 hover:border-cyan-500 dark:border-none dark:text-slate-400"
+                        id="testExecute">Execute</button>
+                    </div>
+                  </div>
+
+                  <div class="row mt-2">
+
+                    <div class="col">
+                      <label>Output</label>
+                      <textarea
+                        class="w-full p-3  border rounded-lg bg-slate-50 dark:!bg-slate-950 hover:border-cyan-500 dark:hover:border-cyan-700 hover:bg-white dark:hover:bg-stone-800 border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200"
+                        id="testOutput"></textarea>
+                    </div>
+                  </div>
+
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+        </div>
+
+        <div class="border dark:!border-slate-800 table-responsive flex flex-col">
+          <div class="relative overflow-x-auto overflow-y-auto flex-auto log-table-scroll [&::-webkit-scrollbar]:w-1
+          [&::-webkit-scrollbar-track]:bg-gray-100
+          [&::-webkit-scrollbar-thumb]:bg-gray-300
+          dark:[&::-webkit-scrollbar-track]:bg-neutral-700
+          dark:[&::-webkit-scrollbar-thumb]:bg-neutral-500">
+            <table id="myTable" class="table-fixed w-full">
+              <thead class="!bg-neutral-100 border-b dark:!border-slate-800 shadow-md dark:!bg-slate-950 dark:text-slate-400 log-sticky-thead">
+                <tr>
+                  <th cope="col" class="px-6 py-3">Description</th>
+                  <th cope="col" class="px-6 py-3">keyword</th>
+                  <th cope="col" class="px-6 py-3">value</th>
+                  <th cope="col" class="px-6 py-3">xpath</th>
+                  <th cope="col" class="px-6 py-3 d-flex align-items-center justify-content-end gap-3">
+                    <span id="stepProgress" class="badge bg-secondary fw-normal text-uppercase text-xs"></span>
+                    <button id="clearLogBtn" class="btn btn-outline-secondary btn-sm">Clear Log</button>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Modal -->
+        <div class="modal fade" id="reExecuteDataModal" tabindex="-1" role="dialog" aria-labelledby="reExecuteDataModalTitle"
+          aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+          <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content dark:bg-slate-900">
+              <div class="modal-header">
+                <h5 class="modal-title" id="reExecuteDataModalTitle">Step Failed - Update & Re-run</h5>
+              </div>
+              <div class="modal-body space-y-3">
+                <div class="p-2 rounded bg-slate-50 dark:bg-slate-800 text-sm">
+                  <div class="mb-1"><span class="fw-bold">Test Step:</span> <span id="reExecStepLabel"></span></div>
+                  <div class="mb-1"><span class="fw-bold">Existing Locator:</span> <span id="reExecLocatorLabel"></span></div>
+                  <div><span class="fw-bold">Step Data:</span> <span id="reExecDataLabel"></span></div>
+                </div>
+                <div class="row g-2">
+                  <div class="col-12 d-flex flex-column gap-1">
+                    <label for="reExecuteModalXpath" class="form-label text-sm mb-0">New / Updated Locator</label>
+                    <input type="text" id="reExecuteModalXpath" class="form-control dark:bg-transparent dark:!text-slate-200 dark:placeholder-slate-500 dark:focus:ring-0 dark:focus:bg-transparent" placeholder="Enter locator / xpath">
+                  </div>
+                  <div class="col-12 d-flex align-items-center gap-2">
+                    <label for="reExecuteModalKeyword" class="form-label text-sm mb-0">Keyword</label>
+                    <select id="reExecuteModalKeyword" class="form-select flex-grow-1 dark:bg-transparent dark:!text-slate-200 dark:border-slate-700">
+                      <option value="">Select keyword</option>
+                    </select>
+                  </div>
+                  <div class="col-12 d-flex flex-column gap-1">
+                    <label for="reExecuteModalValue" class="form-label text-sm mb-0">Step Test Data</label>
+                    <textarea id="reExecuteModalValue" rows="3" class="form-control dark:bg-transparent dark:!text-slate-200 dark:placeholder-slate-500 dark:focus:ring-0 dark:focus:bg-transparent" placeholder="Enter data/value"></textarea>
+                  </div>
+                </div>
+              </div>
+              <div class="modal-footer justify-content-between">
+                <div id="reExecuteFailureReason" class="small text-danger pe-3 flex-grow-1"></div>
+                <div class="d-flex gap-2">
+                  <button type="button" id="reExecuteModalLaunchBrowserBtn" class="btn btn-outline-primary">Launch Browser</button>
+                  <button type="button" id="reExecuteModalCancelBtn" class="btn btn-outline-danger">Close Popup</button>
+                  <button type="button" id="reExecuteModalResetBtn" class="btn btn-outline-secondary">Reset</button>
+                  <button type="button" id="reExecuteModalMarkFailBtn" class="btn btn-outline-danger">Mark as Fail</button>
+                  <button type="button" id="reExecuteModalMarkPassBtn" class="btn btn-outline-success">Mark as Pass</button>
+                </div>
+                <div class="d-flex gap-2">
+                  <button type="button" id="reExecuteModalExecuteBtn" class="btn btn-primary dark:!bg-slate-700 dark:border-slate-700">Re-Execute Step</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal fade" id="recoveryResumeModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+          <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content dark:bg-slate-900">
+              <div class="modal-header">
+                <h5 class="modal-title">Recovery Available</h5>
+              </div>
+              <div class="modal-body">
+                <p class="mb-2 text-sm">An unfinished test run journal was found. Resume from the last non-terminal step?</p>
+                <div class="mb-2">
+                  <label for="recoveryStepSelect" class="form-label text-xs mb-1">Resume From Step</label>
+                  <select id="recoveryStepSelect" class="form-select form-select-sm dark:bg-transparent dark:!text-slate-200 dark:border-slate-700"></select>
+                </div>
+                <div class="text-xs opacity-75">
+                  <div><strong id="recoveryQueueIdLabel">Queue:</strong></div>
+                  <div><strong id="recoverySuiteLabel">Suite:</strong></div>
+                  <div><strong id="recoveryStepLabel">Resume Step:</strong></div>
+                </div>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-outline-secondary" id="recoveryDiscardBtn">Discard</button>
+                <button type="button" class="btn btn-primary dark:!bg-slate-700 dark:border-slate-700" id="recoveryResumeBtn">Resume</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="videoWrapper"
+          class="fixed z-10 bottom-3 left-2 w-[230px]  transition-all ease-in-out shadow-slate-50 outline outline-2 outline-slate-200 rounded-lg overflow-hidden ">
+          <div id="videoModal" class="relative rounded-md overflow-hidden bg-black   w-full h-3/6">
+            <video class="w-100 object-fit-cover h-full" playsinline>
+
+            </video>
+            <span id="videoResizeBtn"
+              class="text-slate-400 absolute right-2 rounded-full cursor-pointer bottom-2 p-3 bg-white text-2xl flex items-center justify-center w-12 h-12 font-bold z-10"><i
+                class="bi bi-aspect-ratio"></i></i></button>
+          </div>
+        </div>
+      </div>
+      <div class="card-footer text-center bg-transparent card flex-row justify-content-center w-100 ">
+        All Rights Reserved © <span id="year"></span>&nbsp;QAF-OnPrem
+      </div>
+    </div>
+  </div>
+
+
+  <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.11.8/dist/umd/popper.min.js"
+    integrity="sha384-I7E8VVD/ismYTF4hNIPjVp/Zjvgyol6VFvRkX/vR+Vc4jQkC+hVqc2pM8ODewa9r"
+    crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.min.js"
+    integrity="sha384-0pUGZvbkm6XF6gxjEnlmuGrJXVbNuzT9qBBavbLwCsOGabYfZo0T0to5eqruptLy"
+    crossorigin="anonymous"></script>
+  <script src="home.js" defer></script>
+  <script src="https://code.jquery.com/jquery-3.4.1.slim.min.js"
+    integrity="sha384-J6qa4849blE2+poT4WnyKhv5vZF5SrPo0iEjwBvKU7imGFAV0wwj1yYfoRSJoZ+n"
+    crossorigin="anonymous"></script>
+  <script>
+
+    $(document).ready(function () {
+      const tooltipTriggerList = document.querySelectorAll('[data-bs-toggle="tooltip"]')
+      const tooltipList = [...tooltipTriggerList].map(tooltipTriggerEl => new bootstrap.Tooltip(tooltipTriggerEl))
+      function checkWindowSize() {
+        const windowWidth = $(window).width();
+        const isSmallScreen = windowWidth < 768;
+        $('#mainContent, #sidebar').toggleClass('collapsed', isSmallScreen);
+      }
+
+      // Check size on page load
+      checkWindowSize();
+
+      // Check size on window resize
+      $(window).resize(function () {
+        checkWindowSize();
+      });
+      $("#year").text(new Date().getFullYear());
+      $('#closeSidebarBtn').on('click', function () {
+        $('#sidebar').addClass('collapsed');
+        $('#mainContent').addClass('collapsed');
+      });
+
+      $('#openSidebarBtn').on('click', function () {
+        $('#sidebar').toggleClass('collapsed');
+        $('#mainContent').toggleClass('collapsed');
+      });
+      let isCentered = false;
+
+      // Resize toggle
+      $('#videoResizeBtn').on('click', function () {
+        if (isCentered) {
+          // Move to bottom-left and make small
+          $('#videoWrapper').removeClass('h-full w-full flex bg-slate-100/20 items-center justify-center h-dvh inset-0').addClass('bottom-3 left-2 w-[230px]');
+          $('#videoModal').removeClass('w-1/2 h-3/6').addClass('w-full h-3/6');
+        } else {
+          // Move to center and make large
+          $('#videoWrapper').removeClass('bottom-3 left-2 w-[230px]').addClass('h-full w-full flex bg-slate-100/20 items-center justify-center h-dvh inset-0');
+          $('#videoModal').removeClass('w-full h-3/6').addClass('w-1/2 h-3/6');
+        }
+        isCentered = !isCentered;
+        $('#videoModal video').attr('controls', isCentered);
+      });
+
+    });
+  </script>
+</body>
+
+</html>
+
