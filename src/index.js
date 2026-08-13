@@ -1600,6 +1600,71 @@ const startServer = (mainWindow, portOverride, options = {}) => {
 
 let testDriver = null;
 
+const MANUAL_EXECUTE_BOOTSTRAP_KEYWORDS = new Set([
+  'closebrowser',
+  'launchdebugbrowser',
+  'debugbrowser',
+  'connectbrowser',
+  'switchbrowser',
+  'switchtoiframe',
+  'switchtocontext',
+  'switchtopath',
+  'switchdom',
+  'switchdom1',
+  'defaultcontext',
+]);
+
+const createManualTestDriver = () => {
+  testDriver = new WebActions();
+  testDriver.setHighlightEnabled?.(highlightEnabled);
+  return testDriver;
+};
+
+const ensureManualTestDriver = () => testDriver || createManualTestDriver();
+
+const resolveManualDriverMethod = (driverRef, keywordNameRaw) => {
+  if (!driverRef || !keywordNameRaw) {
+    return null;
+  }
+
+  const exactName = String(keywordNameRaw).trim();
+  const aliasMap = {
+    debugbrowser: 'launchDebugBrowser',
+  };
+  const aliasName = aliasMap[exactName.toLowerCase()];
+  if (aliasName && typeof driverRef[aliasName] === 'function') {
+    return aliasName;
+  }
+  if (exactName && typeof driverRef[exactName] === 'function') {
+    return exactName;
+  }
+
+  const normalized = exactName.toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+
+  let current = driverRef;
+  while (current && current !== Object.prototype) {
+    for (const name of Object.getOwnPropertyNames(current)) {
+      if (name.toLowerCase() === normalized && typeof driverRef[name] === 'function') {
+        return name;
+      }
+    }
+    current = Object.getPrototypeOf(current);
+  }
+
+  return null;
+};
+
+const getManualSessionActive = async () => {
+  try {
+    return await testDriver?.hasValidSession?.() || false;
+  } catch (_) {
+    return false;
+  }
+};
+
 const testLaunchBrowser = async () => {
   if(testDriver?.driver){
     try { await testDriver.driver.quit(); } catch (_) {}
@@ -1613,9 +1678,9 @@ const testLaunchBrowser = async () => {
   } catch (err) {
     console.log('cleanup previous launch error', err?.message || err);
   }
-  testDriver = new WebActions()
-  testDriver.setHighlightEnabled?.(highlightEnabled);
-  await testDriver.launchBrowser({value:Browser.CHROME,implicitWait:1})
+  testDriver = null;
+  const manualDriver = ensureManualTestDriver();
+  await manualDriver.launchBrowser({value:Browser.CHROME,implicitWait:1})
   // await testDriver.navigate({value:'https://demoqa.com/buttons'})
   // await testDriver?.quit();
   //  testDriver = await launchBrowser({value:Browser.CHROME,implicitWait:1});
@@ -1624,14 +1689,41 @@ const testLaunchBrowser = async () => {
 const testExecute = async (e, { locator, keyword, value="" }) => {
   mainWindow.webContents.send('testExecuteOutput', {output: ''});
 
-  const step = { keyword: { name: keyword }, xPath: locator, value: value }
+  const keywordName = String(keyword || '').trim();
+  const normalizedKeyword = keywordName.toLowerCase();
+  const step = { keyword: { name: keywordName }, xPath: locator, value: value }
   let capturedData = null;
   try {
     if (testDriver?.stopXPathRecorder) {
       await testDriver.stopXPathRecorder();
     }
   } catch (_) {}
-  capturedData  = await testDriver[step.keyword.name](step)
+  try {
+    let manualDriver = testDriver;
+    if (!manualDriver && MANUAL_EXECUTE_BOOTSTRAP_KEYWORDS.has(normalizedKeyword)) {
+      manualDriver = ensureManualTestDriver();
+    }
+
+    if (!manualDriver) {
+      throw new Error('Manual browser session is not initialized. Launch the browser or run a browser session keyword first.');
+    }
+
+    const methodName = resolveManualDriverMethod(manualDriver, keywordName);
+    if (!methodName) {
+      throw new Error(`Unsupported manual keyword: ${keywordName}`);
+    }
+
+    capturedData = await manualDriver[methodName](step)
+    const output = capturedData ?? `${keywordName} executed successfully.`;
+    const sessionActive = await getManualSessionActive();
+    mainWindow.webContents.send('testExecuteOutput', {output});
+    return { ok: true, output, sessionActive };
+  } catch (error) {
+    const output = error?.message || String(error);
+    const sessionActive = await getManualSessionActive();
+    mainWindow.webContents.send('testExecuteOutput', {output});
+    return { ok: false, output, sessionActive };
+  }
   // try {
   //   switch (step.keyword.name.toLowerCase()) {
 
@@ -1768,7 +1860,6 @@ const testExecute = async (e, { locator, keyword, value="" }) => {
   // } catch (error) {
   //   capturedData = error.message;
   // }
-  mainWindow.webContents.send('testExecuteOutput', {output: capturedData});
 }
 
 const closeTestBrowser = async () => {

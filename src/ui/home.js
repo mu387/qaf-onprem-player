@@ -1160,18 +1160,43 @@ testKeyword.addEventListener('change', e => {
   console.log(e.target.value);
 });
 
-testExecute.addEventListener('click', () => {
+const manualAllowEmptyLocatorKeywords = new Set([
+  'closebrowser',
+  'launchdebugbrowser',
+  'debugbrowser',
+  'connectbrowser',
+  'switchbrowser',
+  'switchtoiframe',
+  'switchtocontext',
+  'switchtopath',
+  'switchdom',
+  'switchdom1',
+  'defaultcontext',
+]);
+
+const manualSessionActivationKeywords = new Set([
+  'launchdebugbrowser',
+  'debugbrowser',
+  'connectbrowser',
+]);
+
+testExecute.addEventListener('click', async () => {
   const keyword = (testKeyword.value || '').toLowerCase();
   const locator = testLocator.value || '';
-  // allow execution without locator for certain keywords (e.g., closeBrowser)
-  const allowEmptyLocator = ['closebrowser'];
-  if (!locator.trim() && !allowEmptyLocator.includes(keyword)) {
+  if (!locator.trim() && !manualAllowEmptyLocatorKeywords.has(keyword)) {
     return;
   }
-  express.testExecute(locator, testKeyword.value, testValue.value);
-  // If we just invoked closeBrowser via keyword, update launch button state
-  if (keyword === 'closebrowser') {
-    setLaunchButtonState(false);
+
+  try {
+    const result = await express.testExecute(locator, testKeyword.value, testValue.value);
+    if (manualSessionActivationKeywords.has(keyword) && result?.ok && result?.sessionActive) {
+      setLaunchButtonState(true);
+    }
+    if (keyword === 'closebrowser' && result?.sessionActive === false) {
+      setLaunchButtonState(false);
+    }
+  } catch (err) {
+    testOutput.value = err?.message || String(err);
   }
 });
 
