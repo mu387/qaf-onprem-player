@@ -408,6 +408,97 @@ const resolveWaitForTextConfig = step => {
     return config;
 };
 
+const resolveInFunctionWaitConfig = rawValue => {
+    const entries = parseNamedHelperValue(rawValue);
+    const config = {
+        delayMs: 0,
+    };
+
+    for (const entry of entries) {
+        if (!entry.key) {
+            continue;
+        }
+
+        switch (entry.key) {
+            case 'setinfuncwait':
+            case 'infuncwait':
+            case 'wait': {
+                const rawDelay = String(entry.value || '').trim().replace(/^:+/, '');
+                const parsedDelay = Number(rawDelay);
+                if (Number.isFinite(parsedDelay) && parsedDelay > 0) {
+                    config.delayMs = parsedDelay;
+                }
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    return config;
+};
+
+const resolvePrimaryHelperValue = rawValue => {
+    const entries = parseNamedHelperValue(rawValue);
+    const positional = entries.find(entry => !entry.key);
+    if (positional) {
+        return positional.value;
+    }
+
+    return String(rawValue || '').trim();
+};
+
+const resolveSelectConfig = rawValue => {
+    const entries = parseNamedHelperValue(rawValue);
+    const config = {
+        method: 'text',
+        value: '',
+    };
+
+    for (const entry of entries) {
+        if (!entry.key) {
+            config.value = entry.value;
+            continue;
+        }
+
+        switch (entry.key) {
+            case 'text':
+            case 'value':
+            case 'index':
+                config.method = entry.key;
+                config.value = entry.value;
+                break;
+            case 'setinfuncwait':
+            case 'infuncwait':
+            case 'wait':
+            case 'timeout':
+            case 'waittimeout':
+                break;
+            default:
+                break;
+        }
+    }
+
+    return config;
+};
+
+const resolveRequestedToggleState = rawValue => {
+    const normalized = String(resolvePrimaryHelperValue(rawValue) || '').trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    if (['on', 'true', 'yes', '1', 'selected'].includes(normalized)) {
+        return true;
+    }
+
+    if (['off', 'false', 'no', '0', 'unselected'].includes(normalized)) {
+        return false;
+    }
+
+    return null;
+};
+
 class WebActions {
     driver = null;
     visibleOnlyLookup = false;
@@ -900,7 +991,9 @@ class WebActions {
     };
     async sendKeys(step) {
         const el = await this.findElement(step.xPath, step);
-        return await el.sendKeys(step.value);
+        const result = await el.sendKeys(resolvePrimaryHelperValue(step?.value));
+        await this.applyInFunctionWait(step);
+        return result;
     };
     async sendKey(step) {
         const config = resolveSendKeyConfig(step);
@@ -1057,7 +1150,16 @@ class WebActions {
     };
     async click(step) {
         const el = await this.findElement(step.xPath, step);
+        const requestedState = resolveRequestedToggleState(step?.value);
+        if (requestedState !== null) {
+            const currentState = await this.resolveElementToggleState(el);
+            if (currentState === requestedState) {
+                await this.applyInFunctionWait(step);
+                return `element already ${requestedState ? 'selected' : 'unselected'}`;
+            }
+        }
         await el.click();
+        await this.applyInFunctionWait(step);
         return 'element clicked';
     };
     // NOTE: No current keyword mapping uses setSecure in this engine.
@@ -1066,6 +1168,53 @@ class WebActions {
     };
     async wait(step) {
         await this.driver.sleep(step.value);
+    };
+    async applyInFunctionWait(step) {
+        const config = resolveInFunctionWaitConfig(step?.value);
+        if (!config.delayMs) {
+            return;
+        }
+        await this.driver.sleep(config.delayMs);
+    };
+    async resolveElementToggleState(element) {
+        try {
+            return await element.isSelected();
+        } catch (_) {
+            // fall through to DOM attribute inspection below
+        }
+
+        try {
+            return await this.driver.executeScript(
+                `
+                    const el = arguments[0];
+                    if (!el) return false;
+
+                    if (typeof el.checked === 'boolean') {
+                        return el.checked;
+                    }
+
+                    const ariaPressed = el.getAttribute('aria-pressed');
+                    if (ariaPressed === 'true') return true;
+                    if (ariaPressed === 'false') return false;
+
+                    const ariaSelected = el.getAttribute('aria-selected');
+                    if (ariaSelected === 'true') return true;
+                    if (ariaSelected === 'false') return false;
+
+                    const ariaChecked = el.getAttribute('aria-checked');
+                    if (ariaChecked === 'true') return true;
+                    if (ariaChecked === 'false') return false;
+
+                    return el.classList.contains('active')
+                        || el.classList.contains('selected')
+                        || el.classList.contains('checked')
+                        || el.classList.contains('on');
+                `,
+                element,
+            );
+        } catch (_) {
+            return false;
+        }
     };
     async waitForElement(step) {
         const config = resolveWaitForElementConfig(step);
@@ -1773,18 +1922,12 @@ class WebActions {
             const el = await this.findElement(step.xPath, step);
 
             const select = new Select(el);
-            const raw = String(step?.value || '');
-            if (!raw) {
+            const config = resolveSelectConfig(step?.value);
+            if (!config.value) {
                 throw new Error('Select value is empty.');
             }
-            if (raw.includes('=')) {
-                [method, value] = raw.split('=');
-                method = method.toLowerCase(); // Convert method to lowercase
-            } else {
-                // Default to text if no method is specified
-                method = 'text';
-                value = raw;
-            }
+            method = config.method.toLowerCase();
+            value = config.value;
             switch (method) {
                 case 'value':
                     await select.selectByValue(value);
@@ -1799,6 +1942,7 @@ class WebActions {
                     await select.selectByVisibleText(value);
                     break;
             }
+            await this.applyInFunctionWait(step);
 
             console.log(`Selected option using ${method} with value: ${value}`);
         } catch (error) {
