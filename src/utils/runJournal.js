@@ -113,6 +113,8 @@ const buildInitialJournal = ({ payload, meta = {}, recoveryEnabled = false }) =>
     attempt_no: Number(meta.item?.attempts || 0) || null,
     test_suite_id: Number(meta.item?.test_suite_id || 0) || null,
     test_plan_item_id: Number(meta.item?.test_plan_item_id || 0) || null,
+    execution_id: Number(meta.item?.execution_id || 0) || null,
+    queue_run_id: Number(meta.item?.queue_run_id || 0) || null,
   },
   payload: payload || null,
   progress: {

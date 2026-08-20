@@ -43,6 +43,9 @@ class LocalQueueWorker {
     this.runnerVersion = '';
     this.runnerSessionToken = '';
     this.currentCorrelationId = '';
+    this.currentQueue = null;
+    this.currentItem = null;
+    this.currentClaimToken = '';
     this.timer = null;
     this.heartbeatTimer = null;
     this.heartbeatMs = DEFAULT_HEARTBEAT_MS;
@@ -109,6 +112,9 @@ class LocalQueueWorker {
       hasToken: !!this.token,
       runnerSessionEnabled: this.useRunnerSession,
       hasRunnerSession: !!this.runnerSessionToken,
+      currentQueueId: this.currentQueue?.id || null,
+      currentQueueItemId: this.currentItem?.id || null,
+      currentClaimToken: this.currentClaimToken || null,
       correlationId: this.currentCorrelationId || null,
       pendingFinalize: !!this.pendingFinalize,
       lastError: this.lastError,
@@ -144,6 +150,9 @@ class LocalQueueWorker {
     this.pendingFinalize = null;
     this.stopHeartbeat();
     this.busy = false;
+    this.currentQueue = null;
+    this.currentItem = null;
+    this.currentClaimToken = '';
     this.currentCorrelationId = '';
     this.lastError = `queue_killed:${this.formatError(err)}`;
     try {
@@ -194,6 +203,9 @@ class LocalQueueWorker {
   stop() {
     this.running = false;
     this.busy = false;
+    this.currentQueue = null;
+    this.currentItem = null;
+    this.currentClaimToken = '';
     this.stopHeartbeat();
     if (this.timer) {
       clearTimeout(this.timer);
@@ -360,6 +372,39 @@ class LocalQueueWorker {
     });
   }
 
+  async reportInterruptedFromJournalMeta(meta = {}, reason = 'runner_restarted_recovery_disabled') {
+    const queueId = Number(meta?.queue_id || 0);
+    const executionId = Number(meta?.execution_id || 0) || Number(meta?.test_suite_id || 0);
+    const baseTestSuiteId = Number(meta?.test_suite_id || 0);
+    const claimToken = String(meta?.claim_token || '').trim();
+    if (!queueId || !executionId || !baseTestSuiteId || !claimToken) {
+      throw new Error('Journal is missing queue interrupt identifiers.');
+    }
+
+    await this.request('post', `/execution-queue/${Number(queueId)}/items/interrupted`, {
+      queue_run_id: Number(meta?.queue_run_id || 0) || null,
+      claim_token: claimToken,
+      attempt_no: Number(meta?.attempt_no || 0) || null,
+      test_suite_id: baseTestSuiteId,
+      execution_id: executionId,
+      reason: String(reason || 'runner_restarted_recovery_disabled'),
+    });
+  }
+
+  clearActiveExecution(reason = '') {
+    this.busy = false;
+    this.currentQueue = null;
+    this.currentItem = null;
+    this.currentClaimToken = '';
+    this.currentCorrelationId = '';
+    this.pendingFinalize = null;
+    this.stopHeartbeat();
+    if (reason) {
+      this.lastError = String(reason);
+    }
+    return this.status();
+  }
+
   startHeartbeat(queue, item, claimToken) {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(async () => {
@@ -456,6 +501,9 @@ class LocalQueueWorker {
     this.claimBackoffMs = 0;
 
     this.busy = true;
+    this.currentQueue = queue;
+    this.currentItem = item;
+    this.currentClaimToken = claimToken ? String(claimToken) : '';
     this.currentCorrelationId = `q-${Number(queue?.id || 0)}-i-${Number(item?.id || 0)}-a-${Number(item?.attempts || 0)}-${Date.now()}`;
     let status = 'failed';
     try {
@@ -484,6 +532,9 @@ class LocalQueueWorker {
       this.pendingFinalize = { queue, item, status, claimToken };
       await this.flushPendingFinalize();
       this.busy = false;
+      this.currentQueue = null;
+      this.currentItem = null;
+      this.currentClaimToken = '';
       this.currentCorrelationId = '';
     }
     return this.pollMs;
