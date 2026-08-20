@@ -229,6 +229,7 @@ const clearRendererExecutionLogs = ({ source = 'unknown', reason = 'canceled' } 
     mainWindow?.webContents?.send('testRunnerStepData', []);
     mainWindow?.webContents?.send('openReExecuteDataModal', null);
     mainWindow?.webContents?.send('clearExecutionLogs', { source, reason });
+    mainWindow?.webContents?.send('noActiveTest', { message: 'No active test is running.' });
   } catch (_) {}
 };
 
@@ -743,6 +744,47 @@ const maybePromptRecovery = () => {
   try {
     mainWindow?.webContents?.send('recoveryPrompt', journal);
   } catch (_) {}
+};
+
+const reconcileStaleQueueRunWithoutRecovery = async () => {
+  if (getPersistedRecoveryEnabled()) return { ok: true, skipped: true, reason: 'recovery_enabled' };
+  const journal = loadRunJournal();
+  if (!journal) return { ok: true, skipped: true, reason: 'no_journal' };
+  if (journal.state && ['completed', 'failed', 'canceled', 'discarded'].includes(journal.state)) {
+    clearRunJournal('terminal_journal_cleanup');
+    return { ok: true, skipped: true, reason: 'terminal_journal' };
+  }
+
+  const meta = journal?.meta || {};
+  const queueId = Number(meta.queue_id || 0);
+  const queueItemId = Number(meta.queue_item_id || 0);
+  const claimToken = String(meta.claim_token || '').trim();
+  const testSuiteId = Number(meta.test_suite_id || 0);
+  const executionId = Number(meta.execution_id || 0);
+  if (!queueId || !queueItemId || !claimToken || !testSuiteId || !executionId) {
+    clearRunJournal('stale_journal_missing_interrupt_keys');
+    return { ok: true, skipped: true, reason: 'missing_interrupt_keys' };
+  }
+
+  try {
+    await localQueueWorker.reportInterruptedFromJournalMeta(meta, 'runner_restarted_recovery_disabled');
+    localQueueWorker.clearActiveExecution('stale_queue_interrupted_after_restart');
+    clearRunJournal('stale_queue_interrupted_after_restart');
+    forceExecutionState('idle', { trigger: 'recovery', reason: 'stale_queue_interrupted_after_restart' });
+    lastRunAt = new Date().toISOString();
+    lastRunStatus = 'interrupted';
+    activeRunStartedAt = null;
+    activeRunHeartbeatAt = null;
+    stopActiveRunWatchdog();
+    clearRendererExecutionLogs({
+      source: 'recovery_disabled_restart',
+      reason: 'stale_queue_interrupted_after_restart',
+    });
+    return { ok: true, reconciled: true };
+  } catch (err) {
+    console.log('[queue-local] stale recovery-off reconciliation failed', err?.message || err);
+    return { ok: false, message: err?.message || 'Failed to reconcile stale interrupted queue run.' };
+  }
 };
 const createWindow = () => {
   // Create the browser window.
@@ -1435,6 +1477,54 @@ const startServer = (mainWindow, portOverride, options = {}) => {
       });
     });
 
+    expressApp.post('/queue/cancel-active', authMiddleware, async (req, res) => {
+      try {
+        const body = req.body || {};
+        const workerStatus = localQueueWorker.status();
+        const activeQueueId = Number(workerStatus?.currentQueueId || 0);
+        const activeQueueItemId = Number(workerStatus?.currentQueueItemId || 0);
+        const requestedQueueId = Number(body.queue_id || 0);
+        const requestedQueueItemId = Number(body.queue_item_id || 0);
+        const journal = pendingRecoveryJournal || loadRunJournal();
+        const journalQueueId = Number(journal?.meta?.queue_id || 0);
+        const journalQueueItemId = Number(journal?.meta?.queue_item_id || 0);
+        const matchesJournalContext =
+          requestedQueueId > 0 &&
+          journalQueueId === requestedQueueId &&
+          (requestedQueueItemId <= 0 || journalQueueItemId === requestedQueueItemId);
+
+        if ((!activeQueueId || !activeQueueItemId) && !matchesJournalContext) {
+          return res.json({ ok: true, engaged: false, message: 'No active local queue run is engaged.' });
+        }
+
+        if (activeQueueId > 0 && requestedQueueId > 0 && activeQueueId !== requestedQueueId) {
+          return res.json({ ok: true, engaged: false, message: 'Requested queue is not the active local run.' });
+        }
+
+        if (activeQueueItemId > 0 && requestedQueueItemId > 0 && activeQueueItemId !== requestedQueueItemId) {
+          return res.json({ ok: true, engaged: false, message: 'Requested queue item is not the active local run item.' });
+        }
+
+        await requestRunCancel({
+          source: 'queue_cancel_active',
+          reason: 'queue_cancelled_by_request',
+          clearRecoveryJournal: true,
+        });
+        localQueueWorker.clearActiveExecution('queue_cancelled_by_request');
+        forceExecutionState('idle', { trigger: 'queue_cancel_active', reason: 'queue_cancelled_by_request' });
+
+        return res.json({
+          ok: true,
+          engaged: true,
+          queue_id: activeQueueId || journalQueueId || requestedQueueId || null,
+          queue_item_id: activeQueueItemId || journalQueueItemId || requestedQueueItemId || null,
+          message: 'Active local queue run canceled and reset.',
+        });
+      } catch (err) {
+        return res.status(500).json({ ok: false, message: err?.message || 'Active queue cancellation failed.' });
+      }
+    });
+
     expressApp.post('/queue/config', authMiddleware, async (req, res) => {
       try {
         const body = req.body || {};
@@ -1590,6 +1680,7 @@ const startServer = (mainWindow, portOverride, options = {}) => {
     if (status.enabled && status.hasToken && status.apiBaseUrl) {
       localQueueWorker.start();
       console.log('[queue-local] worker started');
+      void reconcileStaleQueueRunWithoutRecovery();
     } else {
       localQueueWorker.stop();
       console.log('[queue-local] worker idle (missing enabled/token/apiBaseUrl)');
