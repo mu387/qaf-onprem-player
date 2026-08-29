@@ -159,6 +159,51 @@ const parseNamedHelperValue = rawValue => {
     return entries;
 };
 
+const helperHasNamedLocatorOption = (step, allowedKeys) => {
+    const keys = new Set(
+        parseNamedHelperValue(step?.value)
+            .map(entry => entry.key)
+            .filter(Boolean),
+    );
+    return allowedKeys.some(key => keys.has(key));
+};
+
+const helperUsesOwnLocator = step => {
+    const keywordName = String(step?.keyword?.name || step?.keyword || '').trim().toLowerCase();
+
+    if (keywordName === 'waitforelement' || keywordName === 'waitfortext') {
+        return helperHasNamedLocatorOption(step, ['target', 'scope', 'xpath']);
+    }
+
+    if (keywordName === 'sendkey') {
+        return helperHasNamedLocatorOption(step, ['locator']);
+    }
+
+    if (keywordName === 'switchtoiframe') {
+        return String(step?.value || '').trim().length > 0;
+    }
+
+    return false;
+};
+
+const applyExplicitTargetIndex = (target, explicitTargetIndex) => {
+    const normalizedTarget = String(target || '').trim();
+    if (!normalizedTarget) {
+        return normalizedTarget;
+    }
+
+    const normalizedIndex = Number(explicitTargetIndex);
+    if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) {
+        return normalizedTarget;
+    }
+
+    if (/\[\d+\]$/.test(normalizedTarget)) {
+        return normalizedTarget;
+    }
+
+    return `${normalizedTarget}[${normalizedIndex}]`;
+};
+
 const resolveSendKeyConfig = step => {
     const entries = parseNamedHelperValue(step?.value);
     const config = {
@@ -1220,6 +1265,10 @@ class WebActions {
         const config = resolveWaitForElementConfig(step);
         const target = String(config.target || '').trim();
         const state = String(config.state || '').trim().toLowerCase();
+        const useInheritedParentLocator = !helperUsesOwnLocator(step);
+        const indexedInheritedTarget = useInheritedParentLocator
+            ? applyExplicitTargetIndex(target, step?.__explicitTargetIndex)
+            : target;
 
         if (!target) {
             throw new Error('waitForElement requires a target XPath or the step XPath.');
@@ -1230,7 +1279,21 @@ class WebActions {
         }
 
         await this.driver.wait(async () => {
-            const elements = await this.getLookupContext().findElements(this.findElementBy(target));
+            let elements = [];
+            if (useInheritedParentLocator && indexedInheritedTarget !== target) {
+                try {
+                    const element = await this.findElement(indexedInheritedTarget, {
+                        ...step,
+                        xPath: indexedInheritedTarget,
+                        highlight: false,
+                    });
+                    elements = element ? [element] : [];
+                } catch (_) {
+                    elements = [];
+                }
+            } else {
+                elements = await this.getLookupContext().findElements(this.findElementBy(target));
+            }
 
             switch (state) {
                 case 'exist':
@@ -1306,7 +1369,7 @@ class WebActions {
                 default:
                     throw new Error(`Unsupported waitForElement state: ${config.state}`);
             }
-        }, config.timeout, `waitForElement timed out waiting for ${state} on ${target}`);
+        }, config.timeout, `waitForElement timed out waiting for ${state} on ${indexedInheritedTarget}`);
     };
     async waitForText(step) {
         const config = resolveWaitForTextConfig(step);
