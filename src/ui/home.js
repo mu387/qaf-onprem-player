@@ -16,8 +16,43 @@ const appiumServerLabel = document.querySelector('#appiumServerLabel');
 const serverText = document.querySelector('#serverText');
 // const startSeleniumBtn=document.querySelector('#startSelenium')
 const pauseBtn = document.querySelector('#pause');
+const stopExecutionBtn = document.querySelector('#stopExecution');
 const resumeBtn = document.querySelector('#resume');
 let automationRunning = false;
+
+const setSidebarActionVisible = (element, visible) => {
+  if (!element) return;
+  element.classList.toggle('hidden', !visible);
+  element.classList.toggle('d-none', !visible);
+};
+
+const setExecutionControlState = state => {
+  const mode = String(state || 'idle');
+  if (mode === 'running') {
+    setSidebarActionVisible(pauseBtn, true);
+    setSidebarActionVisible(stopExecutionBtn, true);
+    setSidebarActionVisible(resumeBtn, false);
+    return;
+  }
+
+  if (mode === 'paused') {
+    setSidebarActionVisible(pauseBtn, false);
+    setSidebarActionVisible(stopExecutionBtn, true);
+    setSidebarActionVisible(resumeBtn, true);
+    return;
+  }
+
+  if (mode === 'decision') {
+    setSidebarActionVisible(pauseBtn, false);
+    setSidebarActionVisible(stopExecutionBtn, true);
+    setSidebarActionVisible(resumeBtn, false);
+    return;
+  }
+
+  setSidebarActionVisible(pauseBtn, false);
+  setSidebarActionVisible(stopExecutionBtn, false);
+  setSidebarActionVisible(resumeBtn, false);
+};
 // Disable in-app control of Appium/WinAppDriver; they should be run externally.
 const DEVICE_SERVER_CONTROL_DISABLED = true;
 const reExecuteCheckbox = document.querySelector('#reExecute');
@@ -375,8 +410,28 @@ pauseBtn.addEventListener('click', () => {
   }
   express.pauseExecution();
   automationRunning = true;
-  $(pauseBtn).toggle();
-  $(resumeBtn).toggle();
+  setExecutionControlState('paused');
+});
+
+stopExecutionBtn?.addEventListener('click', async () => {
+  const hasRows = tableBody?.rows?.length > 0 || hasExecutionRows;
+  if (!hasRows || !automationRunning) {
+    alert('No test is running.');
+    return;
+  }
+  try {
+    const result = await express.stopExecution?.();
+    const message = String(result?.message || '').trim();
+    if (message) {
+      console.log('[runner-stop]', message);
+    }
+  } catch (error) {
+    console.log('stop execution failed', error?.message || error);
+    alert('Unable to stop the active execution.');
+  } finally {
+    automationRunning = false;
+    setExecutionControlState('idle');
+  }
 });
 
 resumeBtn.addEventListener('click', () => {
@@ -387,8 +442,7 @@ resumeBtn.addEventListener('click', () => {
   }
   express.resumeExecution();
   automationRunning = true;
-  $(pauseBtn).toggle();
-  $(resumeBtn).toggle();
+  setExecutionControlState('running');
 });
 
 const findDefaultRecoveryStepIndex = (runner = [], fallbackIndex = 0) => {
@@ -439,10 +493,7 @@ const clearExecutionLogState = () => {
   suppressReExecuteModal = false;
   hasExecutionRows = false;
   automationRunning = false;
-  pauseBtn?.classList.remove('hidden');
-  resumeBtn?.classList.add('hidden');
-  $(pauseBtn).show();
-  $(resumeBtn).hide();
+  setExecutionControlState('idle');
   reExecModalInstance?.hide();
   refreshResumeFailedStepState();
 };
@@ -451,6 +502,8 @@ express.testRunnerStepData((event, { runner, currentRunner }) => {
   if (!runner || !Array.isArray(runner) || currentRunner === undefined || currentRunner === null || !runner[currentRunner]) {
     tableBody.innerHTML = '';
     hasExecutionRows = false;
+    automationRunning = false;
+    setExecutionControlState('idle');
     return;
   }
   console.log(!runner , currentRunner , runner[currentRunner]?.steps?.length === 0)
@@ -461,12 +514,16 @@ express.testRunnerStepData((event, { runner, currentRunner }) => {
     const hasExecutingStep = runner[currentRunner].steps.some(
       step => step?.actual_step && step.execution === execution.EXECUTING,
     );
+    const hasFailedStep = runner[currentRunner].steps.some(
+      step => step?.actual_step && step.execution === execution.FAILED,
+    );
     if (hasExecutingStep) {
       suppressReExecuteModal = false;
       refreshResumeFailedStepState();
     }
     // receiving step data implies a run is active
     automationRunning = true;
+    setExecutionControlState(hasExecutingStep ? 'running' : (hasFailedStep ? 'decision' : 'paused'));
     const progressEl = document.querySelector('#stepProgress');
     if (progressEl) {
       const totalSteps = runner[currentRunner].steps.filter(s => s.actual_step).length;
@@ -636,6 +693,8 @@ express.openReExecuteDataModal((event, data) => {
     xPath: data?.step?.xPath || '',
   };
   pendingReExecuteData = currentReExecData;
+  automationRunning = true;
+  setExecutionControlState('decision');
   refreshResumeFailedStepState();
 
   if (suppressReExecuteModal) {
@@ -658,6 +717,8 @@ express.openReExecuteDataModal((event, data) => {
 });
 
 express.noActiveTest((_event, data) => {
+  automationRunning = false;
+  setExecutionControlState('idle');
   const message = data?.message || 'No active test is running.';
   alert(message);
 });

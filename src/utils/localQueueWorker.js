@@ -28,10 +28,11 @@ const normalizeQueueStatus = statusName => {
 };
 
 class LocalQueueWorker {
-  constructor({ onExecute, canClaim, onQueueKilled }) {
+  constructor({ onExecute, canClaim, onQueueKilled, shouldSkipFinalize }) {
     this.onExecute = onExecute;
     this.canClaim = canClaim || (() => true);
     this.onQueueKilled = typeof onQueueKilled === 'function' ? onQueueKilled : null;
+    this.shouldSkipFinalize = typeof shouldSkipFinalize === 'function' ? shouldSkipFinalize : () => false;
     this.enabled = false;
     this.running = false;
     this.busy = false;
@@ -431,6 +432,10 @@ class LocalQueueWorker {
 
   async flushPendingFinalize() {
     if (!this.pendingFinalize) return true;
+    if (this.shouldSkipFinalize(this.pendingFinalize)) {
+      this.pendingFinalize = null;
+      return true;
+    }
     try {
       await this.report(
         this.pendingFinalize.queue,
