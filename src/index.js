@@ -2309,7 +2309,36 @@ const formatBeforeAfterSteps = test_runner_steps => {
   // ]
   let x = test_runner_steps.map(runner => {
     runner.steps = runner.steps.map(step => {
-      const mapStep = (stepProperty,xPath) => {
+      const helperUsesOwnLocator = (keywordName, rawValue) => {
+        const normalizedKeyword = String(keywordName || '').trim().toLowerCase();
+        const value = String(rawValue || '');
+        const entries = value
+          .split('>>')
+          .map(part => String(part || '').trim())
+          .filter(Boolean)
+          .map(part => {
+            const separatorIndex = part.indexOf('=');
+            return separatorIndex > 0
+              ? part.slice(0, separatorIndex).trim().toLowerCase()
+              : '';
+          });
+        const hasAnyKey = keys => keys.some(key => entries.includes(key));
+
+        if (normalizedKeyword === 'waitforelement' || normalizedKeyword === 'waitfortext') {
+          return hasAnyKey(['target', 'scope', 'xpath']);
+        }
+
+        if (normalizedKeyword === 'sendkey') {
+          return hasAnyKey(['locator']);
+        }
+
+        if (normalizedKeyword === 'switchtoiframe') {
+          return value.trim().length > 0;
+        }
+
+        return false;
+      };
+      const mapStep = (stepProperty,xPath, explicitTargetIndex) => {
         if (!stepProperty || stepProperty.length === 0) {
           return stepProperty;
         }
@@ -2355,14 +2384,22 @@ const formatBeforeAfterSteps = test_runner_steps => {
           const [name, rawValue] = pair;
           const helperParts = String(rawValue || '').split(';');
           const firstValue = helperParts.shift()?.trim() ?? '';
-          helperSteps.push({ keyword: { name }, value: firstValue, xPath });
+          const mappedStep = { keyword: { name }, value: firstValue, xPath };
+          if (
+            explicitTargetIndex !== undefined
+            && explicitTargetIndex !== null
+            && !helperUsesOwnLocator(name, firstValue)
+          ) {
+            mappedStep.__explicitTargetIndex = explicitTargetIndex;
+          }
+          helperSteps.push(mappedStep);
           helperParts.forEach(appendHelperToken);
         }
 
         return helperSteps;
       };
-      step.before_step = mapStep(step.before_step, step.xPath);
-      step.after_step = mapStep(step.after_step, step.xPath);
+      step.before_step = mapStep(step.before_step, step.xPath, step.__explicitTargetIndex);
+      step.after_step = mapStep(step.after_step, step.xPath, step.__explicitTargetIndex);
       step.actual_step = true;
       step.execution = execution.NOT_EXECUTED;
       return step;
@@ -2406,12 +2443,28 @@ const splitGroupedKeywords = test_runner_steps => {
 };
 
 const runStep = async step => {
+  const parseExplicitIndexedStepValue = rawValue => {
+    const value = String(rawValue ?? '');
+    const match = value.match(/^(\d+)\[\](.*)$/s);
+    if (!match) {
+      return null;
+    }
+    return {
+      explicitTargetIndex: Number(match[1]),
+      value: match[2],
+    };
+  };
 
   /**
    * if the step value contains {{u_localVar}} then it will replace the value with the captured data
    */
   if (capturedData != null && step.value.includes('{{u_capture}}')) {
     step.value = step.value.replace('{{u_capture}}', capturedData);
+  }
+  const parsedIndexedValue = parseExplicitIndexedStepValue(step.value);
+  if (parsedIndexedValue) {
+    step.value = parsedIndexedValue.value;
+    step.__explicitTargetIndex = parsedIndexedValue.explicitTargetIndex;
   }
   console.log(step.keyword.name.toLowerCase().bgGreen)
   console.log(step.value.bgGreen)
