@@ -233,6 +233,57 @@ const clearRendererExecutionLogs = ({ source = 'unknown', reason = 'canceled' } 
   } catch (_) {}
 };
 
+const cancelActiveQueueExecution = async ({ queueId, queueItemId } = {}) => {
+  const workerStatus = localQueueWorker.status();
+  const activeQueueId = Number(workerStatus?.currentQueueId || 0);
+  const activeQueueItemId = Number(workerStatus?.currentQueueItemId || 0);
+  const requestedQueueId = Number(queueId || 0);
+  const requestedQueueItemId = Number(queueItemId || 0);
+  const journal = pendingRecoveryJournal || loadRunJournal();
+  const journalQueueId = Number(journal?.meta?.queue_id || 0);
+  const journalQueueItemId = Number(journal?.meta?.queue_item_id || 0);
+  const matchesJournalContext =
+    requestedQueueId > 0 &&
+    journalQueueId === requestedQueueId &&
+    (requestedQueueItemId <= 0 || journalQueueItemId === requestedQueueItemId);
+
+  if ((!activeQueueId || !activeQueueItemId) && !matchesJournalContext) {
+    return { ok: true, engaged: false, message: 'No active local queue run is engaged.' };
+  }
+
+  if (activeQueueId > 0 && requestedQueueId > 0 && activeQueueId !== requestedQueueId) {
+    return { ok: true, engaged: false, message: 'Requested queue is not the active local run.' };
+  }
+
+  if (activeQueueItemId > 0 && requestedQueueItemId > 0 && activeQueueItemId !== requestedQueueItemId) {
+    return { ok: true, engaged: false, message: 'Requested queue item is not the active local run item.' };
+  }
+
+  const resolvedQueueId = activeQueueId || journalQueueId || requestedQueueId || null;
+  if (!resolvedQueueId) {
+    throw new Error('Active queue stop is missing queue context.');
+  }
+
+  await requestRunCancel({
+    source: 'queue_cancel_active',
+    reason: 'queue_cancelled_by_request',
+    clearRecoveryJournal: true,
+  });
+
+  await localQueueWorker.request('post', `/execution-queue/${Number(resolvedQueueId)}/cancel`, {});
+
+  localQueueWorker.clearActiveExecution('queue_cancelled_by_request');
+  forceExecutionState('idle', { trigger: 'queue_cancel_active', reason: 'queue_cancelled_by_request' });
+
+  return {
+    ok: true,
+    engaged: true,
+    queue_id: resolvedQueueId,
+    queue_item_id: activeQueueItemId || journalQueueItemId || requestedQueueItemId || null,
+    message: 'Active local queue run canceled and reset.',
+  };
+};
+
 const requestRunCancel = async ({
   source = 'unknown',
   reason = 'canceled',
@@ -369,6 +420,10 @@ const gracefulShutdown = async reason => {
 };
 const localQueueWorker = new LocalQueueWorker({
   canClaim: () => !isAutomationExecuting && !isPaused && !recoveryDecisionPending && executionState.getState() !== 'canceling',
+  shouldSkipFinalize: () => {
+    const state = executionState.getState();
+    return state === 'canceling' || state === 'canceled';
+  },
   onExecute: async (payload, meta) => {
     await executeAutomationPayload(payload, {
       token: meta?.token,
@@ -919,6 +974,7 @@ const createWindow = () => {
   ipcMain.handle('closeTestBrowser', closeTestBrowser);
 
   ipcMain.handle('pauseExecution', pauseExecution);
+  ipcMain.handle('stopExecution', stopExecution);
   ipcMain.handle('resumeExecution', resumeExecution);
 
   ipcMain.handle('reExecuteStep', reExecuteStep);
@@ -1480,46 +1536,11 @@ const startServer = (mainWindow, portOverride, options = {}) => {
     expressApp.post('/queue/cancel-active', authMiddleware, async (req, res) => {
       try {
         const body = req.body || {};
-        const workerStatus = localQueueWorker.status();
-        const activeQueueId = Number(workerStatus?.currentQueueId || 0);
-        const activeQueueItemId = Number(workerStatus?.currentQueueItemId || 0);
-        const requestedQueueId = Number(body.queue_id || 0);
-        const requestedQueueItemId = Number(body.queue_item_id || 0);
-        const journal = pendingRecoveryJournal || loadRunJournal();
-        const journalQueueId = Number(journal?.meta?.queue_id || 0);
-        const journalQueueItemId = Number(journal?.meta?.queue_item_id || 0);
-        const matchesJournalContext =
-          requestedQueueId > 0 &&
-          journalQueueId === requestedQueueId &&
-          (requestedQueueItemId <= 0 || journalQueueItemId === requestedQueueItemId);
-
-        if ((!activeQueueId || !activeQueueItemId) && !matchesJournalContext) {
-          return res.json({ ok: true, engaged: false, message: 'No active local queue run is engaged.' });
-        }
-
-        if (activeQueueId > 0 && requestedQueueId > 0 && activeQueueId !== requestedQueueId) {
-          return res.json({ ok: true, engaged: false, message: 'Requested queue is not the active local run.' });
-        }
-
-        if (activeQueueItemId > 0 && requestedQueueItemId > 0 && activeQueueItemId !== requestedQueueItemId) {
-          return res.json({ ok: true, engaged: false, message: 'Requested queue item is not the active local run item.' });
-        }
-
-        await requestRunCancel({
-          source: 'queue_cancel_active',
-          reason: 'queue_cancelled_by_request',
-          clearRecoveryJournal: true,
+        const result = await cancelActiveQueueExecution({
+          queueId: body.queue_id,
+          queueItemId: body.queue_item_id,
         });
-        localQueueWorker.clearActiveExecution('queue_cancelled_by_request');
-        forceExecutionState('idle', { trigger: 'queue_cancel_active', reason: 'queue_cancelled_by_request' });
-
-        return res.json({
-          ok: true,
-          engaged: true,
-          queue_id: activeQueueId || journalQueueId || requestedQueueId || null,
-          queue_item_id: activeQueueItemId || journalQueueItemId || requestedQueueItemId || null,
-          message: 'Active local queue run canceled and reset.',
-        });
+        return res.json(result);
       } catch (err) {
         return res.status(500).json({ ok: false, message: err?.message || 'Active queue cancellation failed.' });
       }
@@ -1607,6 +1628,15 @@ const startServer = (mainWindow, portOverride, options = {}) => {
             stack,
           },
         });
+      }
+    });
+
+    expressApp.post('/run/cancel-active', authMiddleware, async (_req, res) => {
+      try {
+        const result = await stopExecution();
+        return res.json(result);
+      } catch (err) {
+        return res.status(500).json({ ok: false, message: err?.message || 'Active run cancellation failed.' });
       }
     });
     routesRegistered = true;
@@ -2628,6 +2658,46 @@ const pauseExecution = () => {
   });
   return true;
 };
+
+const stopExecution = async () => {
+  const workerStatus = localQueueWorker.status();
+  const activeQueueId = Number(workerStatus?.currentQueueId || 0);
+  const activeQueueItemId = Number(workerStatus?.currentQueueItemId || 0);
+  const hasActiveRunner =
+    !!QAFOnPremAutomation &&
+    Array.isArray(QAFOnPremAutomation.testRunnerSteps) &&
+    QAFOnPremAutomation.testRunnerSteps.length > 0;
+
+  if (!hasActiveRunner) {
+    try {
+      mainWindow?.webContents?.send('noActiveTest', { message: 'No active test is running.' });
+    } catch (err) {
+      console.log('notify no active test failed (ignored)', err?.message || err);
+    }
+    return { ok: true, engaged: false, message: 'No active local run is in progress.' };
+  }
+
+  if (activeQueueId > 0 || activeQueueItemId > 0) {
+    return await cancelActiveQueueExecution({
+      queueId: activeQueueId || undefined,
+      queueItemId: activeQueueItemId || undefined,
+    });
+  }
+
+  await requestRunCancel({
+    source: 'manual_stop',
+    reason: 'manual_stop_requested',
+    clearRecoveryJournal: true,
+  });
+  forceExecutionState('idle', { trigger: 'manual_stop', reason: 'manual_stop_requested' });
+
+  return {
+    ok: true,
+    engaged: true,
+    message: 'Active run canceled and reset.',
+  };
+};
+
 const resumeExecution = () => {
   if (executionState.getState() === 'canceling') {
     return false;
