@@ -1034,6 +1034,28 @@ class WebActions {
             throw new Error(this.visibleOnlyLookup ? 'No visible element found' : 'Element not found');
         }
     };
+    async countVisibleElements(path) {
+        const locator = String(path || '').trim();
+        if (!locator || !this.driver) {
+            return 0;
+        }
+
+        try {
+            const elements = await this.getLookupContext().findElements(this.findElementBy(locator));
+            let visibleCount = 0;
+            for (const candidate of elements || []) {
+                try {
+                    if (await candidate.isDisplayed()) {
+                        visibleCount += 1;
+                    }
+                } catch (_) {}
+            }
+            return visibleCount;
+        } catch (error) {
+            console.log('[automation] loop visible count failed', error?.message || error);
+            return 0;
+        }
+    };
     async sendKeys(step) {
         const el = await this.findElement(step.xPath, step);
         const result = await el.sendKeys(resolvePrimaryHelperValue(step?.value));
