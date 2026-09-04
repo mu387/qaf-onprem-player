@@ -415,7 +415,7 @@ pauseBtn.addEventListener('click', () => {
 
 stopExecutionBtn?.addEventListener('click', async () => {
   const hasRows = tableBody?.rows?.length > 0 || hasExecutionRows;
-  if (!hasRows || !automationRunning) {
+  if (!hasRows && !automationRunning) {
     alert('No test is running.');
     return;
   }
@@ -718,6 +718,10 @@ express.openReExecuteDataModal((event, data) => {
 
 express.noActiveTest((_event, data) => {
   automationRunning = false;
+  if (tableBody) {
+    tableBody.innerHTML = '';
+  }
+  hasExecutionRows = false;
   setExecutionControlState('idle');
   const message = data?.message || 'No active test is running.';
   alert(message);

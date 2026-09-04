@@ -1639,6 +1639,35 @@ const startServer = (mainWindow, portOverride, options = {}) => {
         return res.status(500).json({ ok: false, message: err?.message || 'Active run cancellation failed.' });
       }
     });
+
+    expressApp.get('/run/status', authMiddleware, async (_req, res) => {
+      const workerStatus = localQueueWorker.status();
+      const activeQueueId = Number(workerStatus?.currentQueueId || 0);
+      const activeQueueItemId = Number(workerStatus?.currentQueueItemId || 0);
+      const hasActiveRunner =
+        !!QAFOnPremAutomation &&
+        Array.isArray(QAFOnPremAutomation.testRunnerSteps) &&
+        QAFOnPremAutomation.testRunnerSteps.length > 0;
+      const currentExecutionState = executionState.getState();
+      const active =
+        hasActiveRunner ||
+        isAutomationExecuting ||
+        !!activeCancelPromise ||
+        currentExecutionState === 'running' ||
+        currentExecutionState === 'paused' ||
+        currentExecutionState === 'canceling' ||
+        activeQueueId > 0 ||
+        activeQueueItemId > 0;
+
+      return res.json({
+        ok: true,
+        active,
+        status: active ? currentExecutionState || 'running' : (lastRunStatus || 'idle'),
+        last_run_at: lastRunAt,
+        queue_id: activeQueueId || null,
+        queue_item_id: activeQueueItemId || null,
+      });
+    });
     routesRegistered = true;
   }
   clearServerStartFailure();
@@ -2720,21 +2749,31 @@ const stopExecution = async () => {
     !!QAFOnPremAutomation &&
     Array.isArray(QAFOnPremAutomation.testRunnerSteps) &&
     QAFOnPremAutomation.testRunnerSteps.length > 0;
-
-  if (!hasActiveRunner) {
-    try {
-      mainWindow?.webContents?.send('noActiveTest', { message: 'No active test is running.' });
-    } catch (err) {
-      console.log('notify no active test failed (ignored)', err?.message || err);
-    }
-    return { ok: true, engaged: false, message: 'No active local run is in progress.' };
-  }
+  const currentExecutionState = executionState.getState();
+  const hasActiveAutomation =
+    hasActiveRunner ||
+    isAutomationExecuting ||
+    !!activeCancelPromise ||
+    currentExecutionState === 'running' ||
+    currentExecutionState === 'paused' ||
+    currentExecutionState === 'canceling' ||
+    activeQueueId > 0 ||
+    activeQueueItemId > 0;
 
   if (activeQueueId > 0 || activeQueueItemId > 0) {
     return await cancelActiveQueueExecution({
       queueId: activeQueueId || undefined,
       queueItemId: activeQueueItemId || undefined,
     });
+  }
+
+  if (!hasActiveAutomation) {
+    try {
+      mainWindow?.webContents?.send('noActiveTest', { message: 'No active test is running.' });
+    } catch (err) {
+      console.log('notify no active test failed (ignored)', err?.message || err);
+    }
+    return { ok: true, engaged: false, message: 'No active local run is in progress.' };
   }
 
   await requestRunCancel({
