@@ -139,6 +139,7 @@ class QafOnPremAutomation {
     currentRunner = 0;
     currentStep = 0;
     isPaused = false;
+    loopState = null;
 
     parseExplicitIndexedStepValue(rawValue) {
         const value = String(rawValue ?? '');
@@ -210,6 +211,196 @@ class QafOnPremAutomation {
         step.__explicitTargetIndex = parsed.explicitTargetIndex;
         this.applyExplicitTargetIndexToHelpers(step.before_step, parsed.explicitTargetIndex);
         this.applyExplicitTargetIndexToHelpers(step.after_step, parsed.explicitTargetIndex);
+    }
+
+    getStepLoopDirective(step) {
+        if (!step || typeof step !== 'object') {
+            return null;
+        }
+
+        const candidateValues = [
+            step.Loop,
+            step?.loop?.value,
+            step.loop,
+            step.loop_value,
+            step.loopValue,
+            step.loop_directive,
+            step.loopDirective,
+        ];
+        const rawValue = candidateValues.find(value => value !== undefined && value !== null && String(value).trim() !== '');
+        if (rawValue === undefined || rawValue === null) {
+            return null;
+        }
+
+        const text = String(rawValue).trim().replace(/^loop\s*=\s*/i, '').trim();
+        const startMatch = text.match(/^:?Start-(.+)$/i);
+        if (startMatch) {
+            const arg = startMatch[1].trim();
+            if (!arg) {
+                return null;
+            }
+            return {
+                type: 'start',
+                raw: String(rawValue).trim(),
+                arg,
+                countSource: /^\d+$/.test(arg) ? 'fixed' : 'locator',
+            };
+        }
+
+        if (/^:?End$/i.test(text)) {
+            return {
+                type: 'end',
+                raw: String(rawValue).trim(),
+            };
+        }
+
+        return null;
+    }
+
+    getHelperLoopDirective(step) {
+        const keyword = String(resolveStepKeyword(step) || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (keyword !== 'loop') {
+            return null;
+        }
+        return this.getStepLoopDirective({ Loop: step?.value });
+    }
+
+    findLoopEndStepIndex(steps, startStepIndex) {
+        for (let index = startStepIndex + 1; index < steps.length; index += 1) {
+            const directive = this.getStepLoopDirective(steps[index]);
+            if (directive?.type === 'start') {
+                throw new Error(`Nested loops are not supported. Loop start at step ${index + 1} is inside loop starting at step ${startStepIndex + 1}.`);
+            }
+            if (directive?.type === 'end') {
+                return index;
+            }
+        }
+        throw new Error(`Loop end is missing for loop starting at step ${startStepIndex + 1}.`);
+    }
+
+    findHelperLoopEndStepIndex(steps, startStepIndex) {
+        for (let index = startStepIndex; index < steps.length; index += 1) {
+            const step = steps[index];
+            if (index > startStepIndex) {
+                const directive = this.getStepLoopDirective(step);
+                if (directive?.type === 'start') {
+                    throw new Error(`Nested loops are not supported. Loop start at step ${index + 1} is inside loop starting at step ${startStepIndex + 1}.`);
+                }
+                if (directive?.type === 'end') {
+                    return index;
+                }
+            }
+
+            const helpers = [
+                ...(Array.isArray(step?.before_step) ? step.before_step : []),
+                ...(Array.isArray(step?.after_step) ? step.after_step : []),
+            ];
+            for (const helperStep of helpers) {
+                const helperDirective = this.getHelperLoopDirective(helperStep);
+                if (helperDirective?.type === 'start' && index > startStepIndex) {
+                    throw new Error(`Nested loops are not supported. Loop start at step ${index + 1} is inside loop starting at step ${startStepIndex + 1}.`);
+                }
+                if (helperDirective?.type === 'end') {
+                    return index;
+                }
+            }
+        }
+        throw new Error(`Loop end is missing for loop starting at step ${startStepIndex + 1}.`);
+    }
+
+    async resolveLoopMaxCount(directive) {
+        if (directive?.countSource === 'fixed') {
+            return Number.parseInt(directive.arg, 10) || 0;
+        }
+
+        const locator = String(directive?.arg || '').trim();
+        if (!locator || typeof this.webDriver?.countVisibleElements !== 'function') {
+            return 0;
+        }
+
+        return Number(await this.webDriver.countVisibleElements(locator)) || 0;
+    }
+
+    async initializeLoopIfNeeded({ directive, runner, stepIndex, endStepIndex = null }) {
+        if (!directive || directive.type !== 'start') {
+            return;
+        }
+
+        if (this.loopState?.active) {
+            if (this.loopState.startStepIndex !== stepIndex) {
+                throw new Error(`Nested loops are not supported. Step ${stepIndex + 1} attempted to start a second loop.`);
+            }
+            return;
+        }
+
+        const maxCount = await this.resolveLoopMaxCount(directive);
+        this.loopState = {
+            active: true,
+            startStepIndex: stepIndex,
+            endStepIndex: Number.isFinite(endStepIndex) ? endStepIndex : this.findLoopEndStepIndex(runner.steps, stepIndex),
+            currentIteration: 1,
+            maxCount,
+            countSource: directive.countSource,
+            countLocator: directive.countSource === 'locator' ? String(directive.arg || '').trim() : null,
+        };
+        console.log('[automation] loop initialized', this.loopState);
+    }
+
+    async handleHelperLoopIfNeeded({ helperStep, phase, runner, stepIndex }) {
+        const directive = this.getHelperLoopDirective(helperStep);
+        if (!directive) {
+            return null;
+        }
+
+        if (directive.type === 'start') {
+            if (phase !== 'before') {
+                throw new Error('Loop Start is only supported in before_step.');
+            }
+            await this.initializeLoopIfNeeded({
+                directive,
+                runner,
+                stepIndex,
+                endStepIndex: this.findHelperLoopEndStepIndex(runner.steps, stepIndex),
+            });
+            return { type: 'start' };
+        }
+
+        if (phase !== 'after') {
+            throw new Error('Loop End is only supported in after_step.');
+        }
+
+        return {
+            type: 'end',
+            nextStepIndex: this.handleLoopEndIfNeeded({ directive, stepIndex }),
+        };
+    }
+
+    handleLoopEndIfNeeded({ directive, stepIndex }) {
+        if (!directive || directive.type !== 'end') {
+            return null;
+        }
+
+        if (!this.loopState?.active) {
+            throw new Error(`Loop end at step ${stepIndex + 1} does not have an active loop start.`);
+        }
+
+        if (this.loopState.endStepIndex !== stepIndex) {
+            throw new Error(`Loop end at step ${stepIndex + 1} does not match the active loop ending at step ${this.loopState.endStepIndex + 1}.`);
+        }
+
+        if (this.loopState.currentIteration < this.loopState.maxCount) {
+            this.loopState.currentIteration += 1;
+            console.log('[automation] loop continuing', {
+                currentIteration: this.loopState.currentIteration,
+                maxCount: this.loopState.maxCount,
+                startStepIndex: this.loopState.startStepIndex,
+            });
+            return this.loopState.startStepIndex;
+        }
+
+        console.log('[automation] loop completed', this.loopState);
+        this.loopState = null;
+        return stepIndex + 1;
     }
     selectedScreen = null;
     isReExecuteFlag = false;
@@ -743,6 +934,7 @@ class QafOnPremAutomation {
             }
 
             const runner = this.testRunnerSteps[i];
+            this.loopState = null;
             console.log('\n\n' + 'TEST CASE: ' + (this.currentRunner + 1));
 
             for (let j = startStepIndex; j < runner.steps.length; j++) {
@@ -770,6 +962,30 @@ class QafOnPremAutomation {
                     `[automation] executing step ${j} keyword=${keywordNameForLog} paused=${this.isPaused}`,
                 );
 
+                const loopDirective = this.getStepLoopDirective(step);
+                if (loopDirective?.type === 'start') {
+                    await this.initializeLoopIfNeeded({ directive: loopDirective, runner, stepIndex: j });
+                }
+                if (loopDirective?.type === 'end') {
+                    const nextStepIndex = this.handleLoopEndIfNeeded({ directive: loopDirective, stepIndex: j });
+                    if (step.actual_step || step.parent) {
+                        if (step.parent) {
+                            runner.steps.find(({ id }) => id === step.parent).execution = execution.EXECUTED;
+                        }
+                        step.execution = execution.EXECUTED;
+                        this.mainWindow.webContents.send('testRunnerStepData', {
+                            runner: this.testRunnerSteps,
+                            currentRunner: this.currentRunner,
+                        });
+                        this.emitProgress('step_executed', {
+                            step_id: step?.id || null,
+                            dataset_id: step?.dataset_id || null,
+                        });
+                    }
+                    j = nextStepIndex - 1;
+                    continue;
+                }
+
                 if (step.actual_step) {
                     step.execution = execution.EXECUTING;
                     this.mainWindow.webContents.send('testRunnerStepData', {
@@ -783,6 +999,7 @@ class QafOnPremAutomation {
                 }
 
                 const previousVisibleOnlyLookup = this.webDriver?.getVisibleOnlyLookup?.() ?? false;
+                let afterLoopNextStepIndex = null;
                 try {
                     this.normalizeExplicitIndexedStepValue(step);
 
@@ -792,6 +1009,15 @@ class QafOnPremAutomation {
                             const beforeStep = beforeSteps[beforeStepIndex];
                             beforeStep.isLastTestCaseStep = step.isLastTestCaseStep;
                             try {
+                                const loopControlResult = await this.handleHelperLoopIfNeeded({
+                                    helperStep: beforeStep,
+                                    phase: 'before',
+                                    runner,
+                                    stepIndex: j,
+                                });
+                                if (loopControlResult) {
+                                    continue;
+                                }
                                 await this.runStep(beforeStep);
                             } catch (error) {
                                 if (error?.code === 'RUN_CANCELED') {
@@ -919,6 +1145,16 @@ class QafOnPremAutomation {
                             const afterStep = afterSteps[afterStepindex];
                             afterStep.isLastTestCaseStep = step.isLastTestCaseStep;
                             try {
+                                const loopControlResult = await this.handleHelperLoopIfNeeded({
+                                    helperStep: afterStep,
+                                    phase: 'after',
+                                    runner,
+                                    stepIndex: j,
+                                });
+                                if (loopControlResult) {
+                                    afterLoopNextStepIndex = loopControlResult.nextStepIndex;
+                                    continue;
+                                }
                                 await this.runStep(afterStep);
                             } catch (error) {
                                 if (error?.code === 'RUN_CANCELED') {
@@ -970,6 +1206,10 @@ class QafOnPremAutomation {
                         dataset_id: step?.dataset_id || null,
                     });
                 }
+                if (Number.isFinite(afterLoopNextStepIndex)) {
+                    j = afterLoopNextStepIndex - 1;
+                    continue;
+                }
                 if (this.isPaused) {
                     this.emitProgress('paused');
                     break;
@@ -993,6 +1233,7 @@ class QafOnPremAutomation {
             // reset step index for next runner unless we paused mid-run
             if (!this.isPaused) {
                 this.currentStep = 0;
+                this.loopState = null;
             }
         }
     }
@@ -1060,6 +1301,7 @@ class QafOnPremAutomation {
         this.testRunnerStepData = null;
         this.mainWindow.webContents.send('testRunnerStepData', []);
         this.capturedData = null;
+        this.loopState = null;
     }
 
     pauseExecution() {
