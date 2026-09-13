@@ -510,6 +510,7 @@ const resolveSelectConfig = rawValue => {
             case 'text':
             case 'value':
             case 'index':
+            case 'multiple':
                 config.method = entry.key;
                 config.value = entry.value;
                 break;
@@ -525,6 +526,25 @@ const resolveSelectConfig = rawValue => {
     }
 
     return config;
+};
+
+const selectMultipleByVisibleText = async (select, rawValue) => {
+    const values = String(rawValue || '')
+        .split('>>')
+        .map(value => value.trim())
+        .filter(Boolean);
+
+    if (!values.length) {
+        throw new Error('Multi-select requires at least one option value.');
+    }
+
+    if (!await select.isMultiple()) {
+        throw new Error('Select method "multiple" requires a native multi-select element.');
+    }
+
+    for (const value of values) {
+        await select.selectByVisibleText(value);
+    }
 };
 
 const resolveRequestedToggleState = rawValue => {
@@ -2022,6 +2042,9 @@ class WebActions {
                     break;
                 case 'text':
                     await select.selectByVisibleText(value);
+                    break;
+                case 'multiple':
+                    await selectMultipleByVisibleText(select, value);
                     break;
                 default:
                     await select.selectByVisibleText(value);
